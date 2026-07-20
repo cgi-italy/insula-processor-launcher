@@ -1,10 +1,10 @@
 name: Build External Processor
 
 # Public-facing entry point for external users. This is the ONLY repo an onboarded
-# user is granted write on; parent-pipeline stays invisible to them. Triggered by
-# the insula-processor CLI via workflow_dispatch. It clones a PUBLIC processor
+# user is granted write on; insula-processors-parent-pipeline stays invisible to them. Triggered by
+# the insula-processors-builder CLI via workflow_dispatch. It clones a PUBLIC processor
 # repo and runs the scan -> build -> security -> publish chain by calling the
-# reusable building blocks in parent-pipeline, then produces the processor CWL
+# reusable building blocks in insula-processors-parent-pipeline, then produces the processor CWL
 # with the published image reference injected, as an artifact named "cwl".
 #
 # SECURITY (why write on this repo is safe):
@@ -99,7 +99,7 @@ jobs:
 
   scan_secrets:
     needs: setup
-    uses: cgi-italy/parent-pipeline/.github/workflows/scan_secrets.yml@main
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@main
     with:
       repo_slug: ${{ needs.setup.outputs.slug }}
       ref: ${{ inputs.ref }}
@@ -113,7 +113,7 @@ jobs:
       ${{ always()
       && ( needs.scan_secrets.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/parent-pipeline/.github/workflows/build_image.yml@main
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@main
     with:
       swr_registry: swr.eu-de.otc.t-systems.com
       swr_staging_org: eopaas-test
@@ -126,7 +126,7 @@ jobs:
   security:
     needs: build_image
     if: ${{ always() && needs.build_image.result == 'success' }}
-    uses: cgi-italy/parent-pipeline/.github/workflows/security.yml@main
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@main
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_registry: swr.eu-de.otc.t-systems.com
@@ -141,7 +141,7 @@ jobs:
       && needs.build_image.result == 'success'
       && ( needs.security.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/parent-pipeline/.github/workflows/publish_image.yml@main
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@main
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_prod_org: eopaas/eopaas

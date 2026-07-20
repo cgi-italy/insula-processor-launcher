@@ -38,17 +38,17 @@ the command-line tool, so your platform token never enters this system.
 ## How to use it
 
 You do not edit or push to this repository. You interact with it through the
-`insula-processor` command-line tool:
+`insula-processors-builder` command-line tool:
 
 ```
-insula-processor create --repo-url https://github.com/<you>/<processor>
+insula-processors-builder create --repo-url https://github.com/<you>/<processor>
 ```
 
 To get started:
 
 - scaffold a processor repository from the template
   `cgi-italy-insula-processors/insula-processor-template`;
-- install and authenticate the `insula-processor` CLI;
+- install and authenticate the `insula-processors-builder` CLI;
 - run the command above, and re-run it whenever you push changes.
 
 The default branch of this repository is protected: it defines exactly what runs

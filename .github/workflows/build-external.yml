@@ -154,7 +154,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout external repo
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           repository: ${{ needs.setup.outputs.slug }}
           ref: ${{ inputs.ref }}
@@ -175,7 +175,7 @@ jobs:
           echo "cwl_path=$CWL" >> "$GITHUB_ENV"
 
       - name: Upload CWL artifact
-        uses: actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: cwl
           path: ${{ env.cwl_path }}

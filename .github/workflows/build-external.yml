@@ -1,7 +1,7 @@
 name: Build External Processor
 
 # Public-facing entry point for external users. This is the ONLY repo an onboarded
-# user is granted write on; insula-processors-parent-pipeline stays invisible to them. Triggered by
+# user is granted write on; insula-processors-parent-pipeline is write-locked to maintainers. Triggered by
 # the insula-processors-builder CLI via workflow_dispatch. It clones a PUBLIC processor
 # repo and runs the scan -> build -> security -> publish chain by calling the
 # reusable building blocks in insula-processors-parent-pipeline, then produces the processor CWL

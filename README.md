@@ -15,8 +15,8 @@ This repository holds the single automated workflow that performs those steps.
 Keeping that workflow here, separate from the internal pipeline logic, means:
 
 - you are granted access only to this one repository, only to *start* the build;
-- the internal build, scan, and publish logic stays in a separate private
-  repository that you never need to touch;
+- the build, scan, and publish logic stays in a separate repository you don't
+  interact with (it is write-locked to maintainers);
 - everyone uses the same reviewed, protected workflow, so builds are consistent
   and reproducible.
 

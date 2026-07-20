@@ -1,0 +1,6 @@
+# Any change to what the pipeline runs must be reviewed by a maintainer.
+# The ruleset on main requires code-owner review, so onboarded users (who have
+# write only to dispatch) cannot alter the workflow on main.
+
+*                 @cgi-italy/insula-pipeline-maintainers
+/.github/         @cgi-italy/insula-pipeline-maintainers

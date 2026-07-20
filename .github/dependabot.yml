@@ -1,0 +1,16 @@
+version: 2
+
+# Bumps the pinned actions used in build-external.yml (actions/checkout,
+# actions/upload-artifact). The reusable workflows in parent-pipeline are pinned
+# and maintained there; this only covers the actions referenced in THIS repo.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"

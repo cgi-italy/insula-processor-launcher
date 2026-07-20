@@ -1,0 +1,182 @@
+name: Build External Processor
+
+# Public-facing entry point for external users. This is the ONLY repo an onboarded
+# user is granted write on; parent-pipeline stays invisible to them. Triggered by
+# the insula-processor CLI via workflow_dispatch. It clones a PUBLIC processor
+# repo and runs the scan -> build -> security -> publish chain by calling the
+# reusable building blocks in parent-pipeline, then produces the processor CWL
+# with the published image reference injected, as an artifact named "cwl".
+#
+# SECURITY (why write on this repo is safe):
+#   - GitHub has no dispatch-only permission, so triggering needs write here.
+#   - Registry secrets live in the `swr` Environment on THIS repo, gated to the
+#     default branch, so a side-branch dispatch cannot read them.
+#   - A ruleset + CODEOWNERS on main stop any change to what runs on main.
+#   - The user's api token for the CWL POST is NEVER handled here; the CLI does
+#     that POST locally.
+#   - This repo is PUBLIC, so workflow_dispatch inputs are world-visible: NEVER
+#     add a secret-valued input. Base images must be public or on the internal
+#     Harbor (logged in via the swr-environment BASE_REGISTRY_* secrets).
+#
+# BYPASS: an allowlisted maintainer can set bypass_gate=true to publish the image
+# despite a failing secret or security scan. A non-allowlisted actor setting the
+# flag has no effect (publish stays blocked). The scans still run and still fail.
+
+run-name: "build ${{ inputs.repo_url }} [${{ inputs.correlation_id }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Public github.com URL of the processor repo to build"
+        required: true
+        type: string
+      ref:
+        description: "Git ref of the processor repo to build"
+        required: false
+        default: "main"
+        type: string
+      correlation_id:
+        description: "Client-generated id used to locate this run"
+        required: true
+        type: string
+      bypass_gate:
+        description: "Publish even if the secret or security scan fails (allowlisted maintainers only)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: build-external-${{ inputs.repo_url }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    outputs:
+      slug: ${{ steps.parse.outputs.slug }}
+      app_name: ${{ steps.parse.outputs.app_name }}
+    steps:
+      - name: Parse repo URL
+        id: parse
+        run: |
+          URL="${{ inputs.repo_url }}"
+          case "$URL" in
+            https://github.com/*) : ;;
+            *) echo "::error::repo_url must be https://github.com/<owner>/<repo>"; exit 1 ;;
+          esac
+          SLUG="${URL#https://github.com/}"
+          SLUG="${SLUG%.git}"
+          SLUG="${SLUG%/}"
+          case "$SLUG" in
+            */*) : ;;
+            *) echo "::error::repo_url is not <owner>/<repo>"; exit 1 ;;
+          esac
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "app_name=${SLUG##*/}" >> "$GITHUB_OUTPUT"
+
+  check_bypass_authorized:
+    # Only evaluated when a bypass is requested. Matches the triggering actor
+    # against an explicit maintainer allowlist held in this protected repo.
+    if: ${{ inputs.bypass_gate }}
+    runs-on: ubuntu-24.04
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - id: check
+        env:
+          ACTOR: ${{ github.actor }}
+          # Maintainers permitted to bypass the security gate. Edit here only.
+          ALLOWLIST: '["argaar"]'
+        run: |
+          if echo "$ALLOWLIST" | jq -e --arg a "$ACTOR" 'index($a)' >/dev/null; then
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Security gate BYPASS authorized for $ACTOR"
+          else
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+            echo "::error::$ACTOR is not authorized to bypass the security gate"
+          fi
+
+  scan_secrets:
+    needs: setup
+    uses: cgi-italy/parent-pipeline/.github/workflows/scan_secrets.yml@main
+    with:
+      repo_slug: ${{ needs.setup.outputs.slug }}
+      ref: ${{ inputs.ref }}
+    secrets: inherit
+
+  build_image:
+    needs: [setup, scan_secrets, check_bypass_authorized]
+    # Runs when the secret scan passed, OR when an authorized actor requested a
+    # bypass (which also covers a failed secret scan).
+    if: >-
+      ${{ always()
+      && ( needs.scan_secrets.result == 'success'
+           || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
+    uses: cgi-italy/parent-pipeline/.github/workflows/build_image.yml@main
+    with:
+      swr_registry: swr.eu-de.otc.t-systems.com
+      swr_staging_org: eopaas-test
+      base_registry: core.harbor.dev.eoss-cloud.it
+      repo_slug: ${{ needs.setup.outputs.slug }}
+      ref: ${{ inputs.ref }}
+      app_name: ${{ needs.setup.outputs.app_name }}
+    secrets: inherit
+
+  security:
+    needs: build_image
+    if: ${{ always() && needs.build_image.result == 'success' }}
+    uses: cgi-italy/parent-pipeline/.github/workflows/security.yml@main
+    with:
+      image_name: ${{ needs.build_image.outputs.image_name }}
+      swr_registry: swr.eu-de.otc.t-systems.com
+    secrets: inherit
+
+  publish:
+    needs: [setup, build_image, security, check_bypass_authorized]
+    # Publish when the pipeline is clean, OR when an authorized actor bypassed.
+    # build_image must always have succeeded; a bypass skips the scan GATES only.
+    if: >-
+      ${{ always()
+      && needs.build_image.result == 'success'
+      && ( needs.security.result == 'success'
+           || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
+    uses: cgi-italy/parent-pipeline/.github/workflows/publish_image.yml@main
+    with:
+      image_name: ${{ needs.build_image.outputs.image_name }}
+      swr_prod_org: eopaas/eopaas
+      app_name: ${{ needs.setup.outputs.app_name }}
+    secrets: inherit
+
+  finalize_cwl:
+    needs: [setup, publish]
+    if: ${{ always() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout external repo
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: ${{ needs.setup.outputs.slug }}
+          ref: ${{ inputs.ref }}
+
+      - name: Inject published image into the CWL
+        # Convention: the processor CWL carries the token __IMAGE__ wherever the
+        # published container reference belongs. Replace it with the published ref.
+        env:
+          IMAGE: ${{ needs.publish.outputs.published_image }}
+        run: |
+          CWL="$(find . -maxdepth 2 -name '*.cwl' | head -n1)"
+          if [ -z "$CWL" ]; then
+            echo "::error::no .cwl file found in the processor repo"
+            exit 1
+          fi
+          sed -i "s#__IMAGE__#${IMAGE}#g" "$CWL"
+          echo "Using CWL: $CWL"
+          echo "cwl_path=$CWL" >> "$GITHUB_ENV"
+
+      - name: Upload CWL artifact
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: cwl
+          path: ${{ env.cwl_path }}
+          if-no-files-found: error

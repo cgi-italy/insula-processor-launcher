@@ -179,7 +179,7 @@ jobs:
     # production entry point runs. Releasing a parent change = bump these 4 pins
     # together in one PR. Dependabot cannot bump them while the parent has no
     # tags/releases; bump by hand (SHA of the parent's main HEAD).
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@fa29be5518b323eb942871cb8dd2cfb4b9e8f2aa # main 2026-07-21 (SWR cred split)
     with:
       repo_slug: ${{ needs.setup.outputs.slug }}
       ref: ${{ needs.setup.outputs.sha }}
@@ -199,7 +199,7 @@ jobs:
       && needs.setup.result == 'success'
       && ( needs.scan_secrets.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@fa29be5518b323eb942871cb8dd2cfb4b9e8f2aa # main 2026-07-21 (SWR cred split)
     with:
       swr_registry: swr.eu-de.otc.t-systems.com
       swr_staging_org: eopaas-test
@@ -212,7 +212,7 @@ jobs:
   security:
     needs: build_image
     if: ${{ !cancelled() && needs.build_image.result == 'success' }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@fa29be5518b323eb942871cb8dd2cfb4b9e8f2aa # main 2026-07-21 (SWR cred split)
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_registry: swr.eu-de.otc.t-systems.com
@@ -228,7 +228,7 @@ jobs:
       && needs.build_image.result == 'success'
       && ( needs.security.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@fa29be5518b323eb942871cb8dd2cfb4b9e8f2aa # main 2026-07-21 (SWR cred split)
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_prod_org: eopaas/eopaas

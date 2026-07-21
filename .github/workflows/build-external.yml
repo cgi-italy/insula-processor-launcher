@@ -18,9 +18,10 @@ name: Build External Processor
 #     add a secret-valued input. Base images must be public or on the internal
 #     Harbor (logged in via the swr-environment BASE_REGISTRY_* secrets).
 #
-# BYPASS: an allowlisted maintainer can set bypass_gate=true to publish the image
-# despite a failing secret or security scan. A non-allowlisted actor setting the
-# flag has no effect (publish stays blocked). The scans still run and still fail.
+# BYPASS: a maintainer (maintain/admin role on THIS repo, e.g. via the
+# insula-pipeline-maintainers team) can set bypass_gate=true to publish the image
+# despite a failing secret or security scan. Any other actor setting the flag has
+# no effect (publish stays blocked). The scans still run and still fail.
 
 run-name: "build ${{ inputs.repo_url }} [${{ inputs.correlation_id }}]"
 
@@ -41,7 +42,7 @@ on:
         required: true
         type: string
       bypass_gate:
-        description: "Publish even if the secret or security scan fails (allowlisted maintainers only)"
+        description: "Publish even if the secret or security scan fails (repo maintainers/admins only)"
         required: false
         default: false
         type: boolean
@@ -59,17 +60,20 @@ permissions:
 jobs:
   setup:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       slug: ${{ steps.parse.outputs.slug }}
       app_name: ${{ steps.parse.outputs.app_name }}
+      sha: ${{ steps.parse.outputs.sha }}
     steps:
-      - name: Parse repo URL
+      - name: Parse repo URL and pin ref to a commit SHA
         id: parse
-        # repo_url is an untrusted dispatch input: read it from env and reference
-        # $URL, never inline ${{ }} in the shell, so a value like x";curl evil|sh;"
-        # cannot be substituted into the script before sh runs.
+        # repo_url/ref are untrusted dispatch inputs: read them from env and
+        # reference $URL/$REF, never inline ${{ }} in the shell, so a value like
+        # x";curl evil|sh;" cannot be substituted into the script before sh runs.
         env:
           URL: ${{ inputs.repo_url }}
+          REF: ${{ inputs.ref }}
         run: |
           case "$URL" in
             https://github.com/*) : ;;
@@ -78,9 +82,18 @@ jobs:
           SLUG="${URL#https://github.com/}"
           SLUG="${SLUG%.git}"
           SLUG="${SLUG%/}"
+          # Exactly <owner>/<repo>: reject a pasted browser URL like .../tree/main
+          # (which would otherwise silently yield the wrong app_name).
           case "$SLUG" in
+            */*/*) echo "::error::repo_url must be https://github.com/<owner>/<repo> with no extra path"; exit 1 ;;
             */*) : ;;
             *) echo "::error::repo_url is not <owner>/<repo>"; exit 1 ;;
+          esac
+          # ref reaches git as an argument: reject a leading dash (argument
+          # injection) and anything outside the git-ref charset.
+          case "$REF" in
+            -*) echo "::error::ref must not start with '-'"; exit 1 ;;
+            *[!A-Za-z0-9._/-]*) echo "::error::ref has invalid characters"; exit 1 ;;
           esac
           # Owner-scoped app name so owner/foo and otheruser/foo do not collide on
           # the shared :latest tag. Lowercased because registry repository names
@@ -97,61 +110,109 @@ jobs:
           case "$APP_NAME" in
             *[!a-z0-9._-]*) echo "::error::app name has invalid characters"; exit 1 ;;
           esac
+          # Pin ref to an immutable commit SHA ONCE, so scan_secrets, build_image,
+          # and finalize_cwl all check out the exact same commit. A mutable ref
+          # re-resolved per job would let a push land unscanned code in the built
+          # image after the secret scan passed (TOCTOU). Prefer a tag-dereferenced
+          # commit (line ending ^{}), else the first match.
+          LS="$(git ls-remote "https://github.com/${SLUG}.git" "$REF" 2>/dev/null || true)"
+          SHA="$(printf '%s\n' "$LS" | awk '/\^\{\}$/ {print $1; exit}')"
+          [ -z "$SHA" ] && SHA="$(printf '%s\n' "$LS" | awk 'NF {print $1; exit}')"
+          if [ -z "$SHA" ]; then
+            # ref may already be a full commit SHA (ls-remote returns nothing then).
+            case "$REF" in
+              [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) SHA="$REF" ;;
+              *) echo "::error::could not resolve ref '$REF' in $SLUG"; exit 1 ;;
+            esac
+          fi
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
           echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
   check_bypass_authorized:
-    # Only evaluated when a bypass is requested. Matches the triggering actor
-    # against an explicit maintainer allowlist held in this protected repo.
+    # Only evaluated when a bypass is requested. Authorizes the triggering actor
+    # by their EFFECTIVE role on this repo (highest grant, teams included: the
+    # insula-pipeline-maintainers team holds maintain). admin/maintain may bypass;
+    # onboarded joiners hold write and may not. No allowlist to edit: grant or
+    # revoke bypass by changing team/repo roles.
     if: ${{ inputs.bypass_gate }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       authorized: ${{ steps.check.outputs.authorized }}
     steps:
-      - id: check
+      - name: Authorize bypass by the actor's effective repo role
+        id: check
         env:
+          GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
-          # Maintainers permitted to bypass the security gate. Edit here only.
-          ALLOWLIST: '["argaar"]'
+          REPO: ${{ github.repository }}
         run: |
-          if echo "$ALLOWLIST" | jq -e --arg a "$ACTOR" 'index($a)' >/dev/null; then
+          # The permission endpoint needs only Metadata:read, which GITHUB_TOKEN
+          # always carries implicitly; no stored token. Retried (a transient API
+          # blip during a legitimate mid-incident bypass would otherwise cost a
+          # full pipeline re-dispatch), then FAILS CLOSED: authorized is never
+          # set, publish stays blocked. A 404 (actor not a collaborator) burns
+          # the retries before failing closed - acceptable, such an actor cannot
+          # dispatch anyway.
+          n=0
+          until ROLE="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.role_name')"; do
+            n=$((n+1))
+            if [ "$n" -ge 3 ]; then
+              echo "::error::could not verify $ACTOR's role (GitHub API error after 3 attempts); failing closed - re-dispatch with --bypass to retry"
+              exit 1
+            fi
+            sleep $((n*5))
+          done
+          if [ "$ROLE" = "admin" ] || [ "$ROLE" = "maintain" ]; then
             echo "authorized=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Security gate BYPASS authorized for $ACTOR"
+            echo "::warning::Security gate BYPASS authorized for $ACTOR (role: $ROLE)"
           else
             echo "authorized=false" >> "$GITHUB_OUTPUT"
-            echo "::error::$ACTOR is not authorized to bypass the security gate"
+            echo "::error::$ACTOR (role: $ROLE) is not authorized to bypass the security gate"
           fi
 
   scan_secrets:
     needs: setup
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@main
+    # The 4 parent-pipeline reusable workflows are pinned to a commit SHA (not
+    # @main) so a merge to the parent's main cannot silently change what this
+    # production entry point runs. Releasing a parent change = bump these 4 pins
+    # together in one PR. Dependabot cannot bump them while the parent has no
+    # tags/releases; bump by hand (SHA of the parent's main HEAD).
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
     with:
       repo_slug: ${{ needs.setup.outputs.slug }}
-      ref: ${{ inputs.ref }}
+      ref: ${{ needs.setup.outputs.sha }}
     secrets: inherit
 
   build_image:
     needs: [setup, scan_secrets, check_bypass_authorized]
-    # Runs when the secret scan passed, OR when an authorized actor requested a
-    # bypass (which also covers a failed secret scan).
+    # Runs when setup succeeded AND the secret scan passed, OR when an authorized
+    # actor requested a bypass (which also covers a failed secret scan). setup
+    # success is required explicitly: without it a bypass would start this job
+    # with empty repo_slug/app_name (checking out the launcher itself).
+    # !cancelled() (not always()): a job gated with always() would still start
+    # after cancel-in-progress cancelled the run, letting a superseded run keep
+    # building/publishing.
     if: >-
-      ${{ always()
+      ${{ !cancelled()
+      && needs.setup.result == 'success'
       && ( needs.scan_secrets.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@main
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
     with:
       swr_registry: swr.eu-de.otc.t-systems.com
       swr_staging_org: eopaas-test
       base_registry: core.harbor.dev.eoss-cloud.it
       repo_slug: ${{ needs.setup.outputs.slug }}
-      ref: ${{ inputs.ref }}
+      ref: ${{ needs.setup.outputs.sha }}
       app_name: ${{ needs.setup.outputs.app_name }}
     secrets: inherit
 
   security:
     needs: build_image
-    if: ${{ always() && needs.build_image.result == 'success' }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@main
+    if: ${{ !cancelled() && needs.build_image.result == 'success' }}
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_registry: swr.eu-de.otc.t-systems.com
@@ -161,12 +222,13 @@ jobs:
     needs: [setup, build_image, security, check_bypass_authorized]
     # Publish when the pipeline is clean, OR when an authorized actor bypassed.
     # build_image must always have succeeded; a bypass skips the scan GATES only.
+    # !cancelled(): see build_image (a cancelled run must not still publish).
     if: >-
-      ${{ always()
+      ${{ !cancelled()
       && needs.build_image.result == 'success'
       && ( needs.security.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@main
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@d0558dda1d0877e1b7eacf3cb0e01aacda5caa8e # main 2026-07-21
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_prod_org: eopaas/eopaas
@@ -175,14 +237,15 @@ jobs:
 
   finalize_cwl:
     needs: [setup, publish]
-    if: ${{ always() && needs.publish.result == 'success' }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout external repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.setup.outputs.slug }}
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.setup.outputs.sha }}
 
       - name: Inject published image into the CWL
         # Convention: the processor CWL carries the token __IMAGE__ wherever the
@@ -190,12 +253,31 @@ jobs:
         env:
           IMAGE: ${{ needs.publish.outputs.published_image }}
         run: |
-          CWL="$(find . -maxdepth 2 -name '*.cwl' | head -n1)"
-          if [ -z "$CWL" ]; then
+          # Exactly one .cwl must exist. Refuse to guess (head -n1) if the repo
+          # ships several - the wrong one would be deployed silently.
+          CWL_COUNT="$(find . -maxdepth 2 -name '*.cwl' | wc -l | tr -d '[:space:]')"
+          if [ "$CWL_COUNT" -eq 0 ]; then
             echo "::error::no .cwl file found in the processor repo"
             exit 1
           fi
+          if [ "$CWL_COUNT" -ne 1 ]; then
+            echo "::error::found $CWL_COUNT .cwl files; the processor repo must contain exactly one"
+            exit 1
+          fi
+          CWL="$(find . -maxdepth 2 -name '*.cwl')"
+          # The published image reference may enter the CWL ONLY through the
+          # __IMAGE__ token. Without the token the CWL would deploy a user-chosen,
+          # never-scanned image, silently defeating the whole scan/build/publish
+          # gate - so require the token, then confirm nothing is left unsubstituted.
+          if ! grep -q '__IMAGE__' "$CWL"; then
+            echo "::error::CWL is missing the __IMAGE__ token; refusing to publish an unverified image reference"
+            exit 1
+          fi
           sed -i "s#__IMAGE__#${IMAGE}#g" "$CWL"
+          if grep -q '__IMAGE__' "$CWL"; then
+            echo "::error::__IMAGE__ token still present after substitution"
+            exit 1
+          fi
           echo "Using CWL: $CWL"
           echo "cwl_path=$CWL" >> "$GITHUB_ENV"
 

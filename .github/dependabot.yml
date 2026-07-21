@@ -1,8 +1,10 @@
 version: 2
 
-# Bumps the pinned actions used in build-external.yml (actions/checkout,
-# actions/upload-artifact). The reusable workflows in insula-processors-parent-pipeline are pinned
-# and maintained there; this only covers the actions referenced in THIS repo.
+# Bumps the pinned actions referenced by ALL workflows in THIS repo
+# (checkout/upload-artifact/setup-python in build-external.yml + lint.yml,
+# docker/login-action in registry-canary.yml). The reusable workflows in
+# insula-processors-parent-pipeline are pinned and maintained there; their
+# 4 SHA pins in build-external.yml are bumped by hand (parent has no tags).
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"

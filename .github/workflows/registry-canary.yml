@@ -1,0 +1,59 @@
+name: Registry credential canary
+
+# Weekly login check for every registry credential the pipeline depends on
+# (SWR staging AK/SK, SWR prod AK/SK, Harbor robot token). They expire with no
+# warning; without this canary the first symptom is EVERY user build failing.
+# A failing step fails the run loudly. Scheduled-failure emails route to the
+# user who last edited the cron line, NOT to a team: every maintainer must set
+# Watch -> Custom -> Actions on this repo to be notified.
+#
+# SCOPE: this canary proves AUTHENTICATION only. docker login cannot see
+# per-namespace AUTHORIZATION (staging push/pull/delete, prod write) - a
+# mis-scoped key passes here and still fails a real publish. Authorization is
+# proven only by a real run (the migration e2e, then user builds).
+#
+# NOTE (GitHub Free): scheduled workflows are disabled automatically after 60
+# days without repo activity; the disable notice email is itself a signal to
+# re-enable.
+
+on:
+  schedule:
+    # Monday 06:17 UTC (odd minute to avoid the top-of-hour scheduler crunch).
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+# Login uses the swr environment secrets; nothing needs GITHUB_TOKEN.
+permissions: {}
+
+jobs:
+  canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Same environment as the pipeline: its default-branch-only rule still
+    # applies (scheduled runs execute on the default branch).
+    environment: swr
+    steps:
+      - name: SWR staging credential
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: swr.eu-de.otc.t-systems.com
+          username: ${{ secrets.SWR_STAGING_USERNAME }}
+          password: ${{ secrets.SWR_STAGING_PASSWORD }}
+
+      - name: SWR prod credential
+        # !cancelled(): check every credential even when an earlier one failed,
+        # so one rotation event cannot hide the state of the other two.
+        if: ${{ !cancelled() }}
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: swr.eu-de.otc.t-systems.com
+          username: ${{ secrets.SWR_PROD_USERNAME }}
+          password: ${{ secrets.SWR_PROD_PASSWORD }}
+
+      - name: Base registry (Harbor) credential
+        if: ${{ !cancelled() }}
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: core.harbor.dev.eoss-cloud.it
+          username: ${{ secrets.BASE_REGISTRY_USERNAME }}
+          password: ${{ secrets.BASE_REGISTRY_PASSWORD }}

@@ -1,0 +1,69 @@
+name: Lint
+
+# actionlint on the workflow, plus a launcher-side guard that the workflow_dispatch
+# inputs still match the dispatch contract the CLI relies on (config.WORKFLOW_INPUTS).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint
+        # Digest-pinned actionlint image (tag 1.7.12). shellcheck integration is
+        # disabled (-shellcheck=) so the gate first covers workflow syntax and
+        # expression errors; enable shellcheck later behind a shell-cleanup pass.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color -shellcheck=
+
+  dispatch_contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: dispatch contract, parent pin, and artifact-name invariants
+        run: |
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import re, sys, yaml
+          wf = yaml.safe_load(open(".github/workflows/build-external.yml", encoding="utf-8"))
+          # PyYAML parses the bare `on:` key as the boolean True.
+          on = wf.get("on", wf.get(True))
+          got = set(on["workflow_dispatch"]["inputs"])
+          expected = {"repo_url", "ref", "correlation_id", "bypass_gate"}
+          if got != expected:
+              print(f"::error::workflow_dispatch inputs {sorted(got)} != contract {sorted(expected)}")
+              sys.exit(1)
+          print("dispatch inputs match the CLI WORKFLOW_INPUTS contract")
+          # Release invariant: the 4 parent-pipeline reusable workflows are pinned
+          # to ONE identical 40-hex commit SHA (never @main). A hand-bump of 3 of
+          # 4 would otherwise ship a silent split-version production run.
+          refs = [j["uses"] for j in wf["jobs"].values()
+                  if isinstance(j, dict)
+                  and j.get("uses", "").startswith("cgi-italy/insula-processors-parent-pipeline/")]
+          shas = {u.rsplit("@", 1)[1] for u in refs}
+          if len(refs) != 4 or len(shas) != 1 or not re.fullmatch(r"[0-9a-f]{40}", next(iter(shas))):
+              print(f"::error::parent-pipeline uses: refs must be 4 identical 40-hex SHA pins; got {len(refs)} refs, pins {sorted(shas)}")
+              sys.exit(1)
+          print(f"4 parent-pipeline refs pinned to one SHA: {next(iter(shas))}")
+          # Contract 2's artifact-name leg: the finalize upload must stay "cwl"
+          # (the CLI downloads by that name; a rename only fails at a live run).
+          uploads = [s for s in wf["jobs"]["finalize_cwl"]["steps"]
+                     if s.get("uses", "").startswith("actions/upload-artifact")]
+          if len(uploads) != 1 or uploads[0].get("with", {}).get("name") != "cwl":
+              print("::error::finalize_cwl must upload exactly one artifact named 'cwl' (CLI CWL_ARTIFACT_NAME)")
+              sys.exit(1)
+          print("finalize_cwl uploads artifact 'cwl'")
+          PY

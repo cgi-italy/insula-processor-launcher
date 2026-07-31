@@ -381,3 +381,13 @@ jobs:
             sleep $((n*5))
           done
           echo "Published CWL release $TAG (asset $ASSET, commit $SHA)"
+          # Surface the CWL asset's public download URL (the Insula
+          # executionUnit.href a deploy uses) as a run annotation + step summary,
+          # so a maintainer sees it on the run page and need not open the release
+          # to copy it. Exactly one asset per release, so read .assets[0].url;
+          # fall back to the deterministic download URL if the lookup blips.
+          CWL_URL="$(gh release view "$TAG" --repo "$REPO" --json assets \
+            --jq '.assets[0].url' 2>/dev/null || true)"
+          [ -n "$CWL_URL" ] || CWL_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+          echo "::notice title=CWL artifact URL::$CWL_URL"
+          printf '### CWL artifact\n[%s](%s)\n' "$ASSET" "$CWL_URL" >> "$GITHUB_STEP_SUMMARY"

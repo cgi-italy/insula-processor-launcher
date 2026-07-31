@@ -67,5 +67,5 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.CWL_PUBLISH_APP_ID }}
+          client-id: ${{ secrets.CWL_PUBLISH_CLIENT_ID }}
           private-key: ${{ secrets.CWL_PUBLISH_APP_PRIVATE_KEY }}

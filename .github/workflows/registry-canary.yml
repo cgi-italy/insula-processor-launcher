@@ -36,7 +36,7 @@ jobs:
     environment: swr
     steps:
       - name: SWR staging credential
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: swr.eu-de.otc.t-systems.com
           username: ${{ secrets.SWR_STAGING_USERNAME }}
@@ -46,7 +46,7 @@ jobs:
         # !cancelled(): check every credential even when an earlier one failed,
         # so one rotation event cannot hide the state of the other two.
         if: ${{ !cancelled() }}
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: swr.eu-de.otc.t-systems.com
           username: ${{ secrets.SWR_PROD_USERNAME }}
@@ -54,7 +54,7 @@ jobs:
 
       - name: Base registry (Harbor) credential
         if: ${{ !cancelled() }}
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: core.harbor.dev.eoss-cloud.it
           username: ${{ secrets.BASE_REGISTRY_USERNAME }}

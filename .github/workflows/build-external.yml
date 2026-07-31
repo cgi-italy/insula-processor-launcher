@@ -273,7 +273,11 @@ jobs:
             echo "::error::CWL is missing the __IMAGE__ token; refusing to publish an unverified image reference"
             exit 1
           fi
-          sed -i "s#__IMAGE__#${IMAGE}#g" "$CWL"
+          # Insula's CWL executor resolves the image against internal project registry, so the CWL must carry only
+          # <app>:<tag>, not the full registry/namespace path. app_name is slash-free
+          # (validated ^[a-z0-9][a-z0-9._-]*$), so ##*/ strips exactly the prefix.
+          IMAGE_REF="${IMAGE##*/}"
+          sed -i "s#__IMAGE__#${IMAGE_REF}#g" "$CWL"
           if grep -q '__IMAGE__' "$CWL"; then
             echo "::error::__IMAGE__ token still present after substitution"
             exit 1

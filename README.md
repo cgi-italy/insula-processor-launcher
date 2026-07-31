@@ -30,10 +30,12 @@ When a build is started for a processor repository, the workflow:
 4. scans the image for HIGH/CRITICAL vulnerabilities;
 5. publishes the scanned image to the platform registry;
 6. produces the processor's CWL application package with the published image
-   reference filled in.
+   reference filled in, and publishes it as a GitHub Release (tagged
+   `cwl-<correlation_id>`) so it has a stable public URL.
 
 The final deployment of that CWL to Insula is performed from your own machine by
-the command-line tool, so your platform token never enters this system.
+the command-line tool: it hands Insula the release URL and Insula fetches the CWL,
+so your platform token never enters this system.
 
 ## How to use it
 

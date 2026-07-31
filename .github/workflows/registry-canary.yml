@@ -1,16 +1,18 @@
 name: Registry credential canary
 
-# Weekly login check for every registry credential the pipeline depends on
-# (SWR staging AK/SK, SWR prod AK/SK, Harbor robot token). They expire with no
-# warning; without this canary the first symptom is EVERY user build failing.
-# A failing step fails the run loudly. Scheduled-failure emails route to the
-# user who last edited the cron line, NOT to a team: every maintainer must set
-# Watch -> Custom -> Actions on this repo to be notified.
+# Weekly login check for every credential the pipeline depends on: the SWR
+# staging AK/SK, SWR prod AK/SK, Harbor robot token, and the CWL-publish GitHub
+# App key that finalize_cwl uses to publish the CWL release. They expire or get
+# revoked with no warning; without this canary the first symptom is EVERY user
+# build failing (or, for the App key, every finalize_cwl failing after a
+# successful prod publish). A failing step fails the run loudly.
+# Scheduled-failure emails route to the user who last edited the cron line, NOT
+# to a team: every maintainer must set Watch -> Custom -> Actions on this repo.
 #
 # SCOPE: this canary proves AUTHENTICATION only. docker login cannot see
-# per-namespace AUTHORIZATION (staging push/pull/delete, prod write) - a
-# mis-scoped key passes here and still fails a real publish. Authorization is
-# proven only by a real run (the migration e2e, then user builds).
+# per-namespace AUTHORIZATION (staging push/pull/delete, prod write), and minting
+# an App token cannot see its contents:write grant - a mis-scoped key passes here
+# and still fails a real publish. Authorization is proven only by a real run.
 #
 # NOTE (GitHub Free): scheduled workflows are disabled automatically after 60
 # days without repo activity; the disable notice email is itself a signal to
@@ -57,3 +59,13 @@ jobs:
           registry: core.harbor.dev.eoss-cloud.it
           username: ${{ secrets.BASE_REGISTRY_USERNAME }}
           password: ${{ secrets.BASE_REGISTRY_PASSWORD }}
+
+      - name: CWL-publish App credential
+        # Minting an installation token fails if the App id/private key is wrong or
+        # revoked, so this catches a dead CWL-publish key BEFORE finalize_cwl needs
+        # it (right after a prod publish, the worst place to discover it).
+        if: ${{ !cancelled() }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CWL_PUBLISH_APP_ID }}
+          private-key: ${{ secrets.CWL_PUBLISH_APP_PRIVATE_KEY }}

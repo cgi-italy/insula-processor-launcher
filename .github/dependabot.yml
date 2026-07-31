@@ -1,8 +1,8 @@
 version: 2
 
 # Bumps the pinned actions referenced by ALL workflows in THIS repo
-# (checkout/upload-artifact/setup-python in build-external.yml + lint.yml,
-# docker/login-action in registry-canary.yml). The reusable workflows in
+# (checkout/setup-python + create-github-app-token in build-external.yml + lint.yml,
+# docker/login-action + create-github-app-token in registry-canary.yml). The reusable workflows in
 # insula-processors-parent-pipeline are pinned and maintained there; their
 # 4 SHA pins in build-external.yml are bumped by hand (parent has no tags).
 updates:

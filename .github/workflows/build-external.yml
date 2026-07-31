@@ -5,7 +5,8 @@ name: Build External Processor
 # the insula-processors-builder CLI via workflow_dispatch. It clones a PUBLIC processor
 # repo and runs the scan -> build -> security -> publish chain by calling the
 # reusable building blocks in insula-processors-parent-pipeline, then produces the processor CWL
-# with the published image reference injected, as an artifact named "cwl".
+# with the published image reference injected and publishes it as a GitHub Release
+# (tag "cwl-<correlation_id>") so Insula can fetch it by URL at deploy time.
 #
 # SECURITY (why write on this repo is safe):
 #   - GitHub has no dispatch-only permission, so triggering needs write here.
@@ -115,7 +116,24 @@ jobs:
           # re-resolved per job would let a push land unscanned code in the built
           # image after the secret scan passed (TOCTOU). Prefer a tag-dereferenced
           # commit (line ending ^{}), else the first match.
-          LS="$(git ls-remote "https://github.com/${SLUG}.git" "$REF" 2>/dev/null || true)"
+          # Retry the single network call that gates the whole pipeline. ls-remote
+          # exits non-zero only on a transport failure (an unmatched ref still exits 0
+          # with empty output), so retry ONLY the failure path: a transient github.com
+          # blip must not be reported as "could not resolve ref". A genuine no-such-ref
+          # falls through to the resolution below.
+          LS=""
+          n=0
+          while :; do
+            if LS="$(git ls-remote "https://github.com/${SLUG}.git" "$REF" 2>/dev/null)"; then
+              break
+            fi
+            n=$((n+1))
+            if [ "$n" -ge 3 ]; then
+              echo "::error::could not reach github.com to resolve ref '$REF' in $SLUG after retries"
+              exit 1
+            fi
+            sleep $((n*5))
+          done
           SHA="$(printf '%s\n' "$LS" | awk '/\^\{\}$/ {print $1; exit}')"
           [ -z "$SHA" ] && SHA="$(printf '%s\n' "$LS" | awk 'NF {print $1; exit}')"
           if [ -z "$SHA" ]; then
@@ -179,7 +197,7 @@ jobs:
     # production entry point runs. Releasing a parent change = bump these 4 pins
     # together in one PR. Dependabot cannot bump them while the parent has no
     # tags/releases; bump by hand (SHA of the parent's main HEAD).
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@5147222d2d09c7b9e59ee02b6a8bfe61adf25ebd # main 2026-07-21 (SWR cred split + public-safe README)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
     with:
       repo_slug: ${{ needs.setup.outputs.slug }}
       ref: ${{ needs.setup.outputs.sha }}
@@ -199,7 +217,7 @@ jobs:
       && needs.setup.result == 'success'
       && ( needs.scan_secrets.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@5147222d2d09c7b9e59ee02b6a8bfe61adf25ebd # main 2026-07-21 (SWR cred split + public-safe README)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
     with:
       swr_registry: swr.eu-de.otc.t-systems.com
       swr_staging_org: eopaas-test
@@ -212,7 +230,7 @@ jobs:
   security:
     needs: build_image
     if: ${{ !cancelled() && needs.build_image.result == 'success' }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@5147222d2d09c7b9e59ee02b6a8bfe61adf25ebd # main 2026-07-21 (SWR cred split + public-safe README)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_registry: swr.eu-de.otc.t-systems.com
@@ -228,7 +246,7 @@ jobs:
       && needs.build_image.result == 'success'
       && ( needs.security.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@5147222d2d09c7b9e59ee02b6a8bfe61adf25ebd # main 2026-07-21 (SWR cred split + public-safe README)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_prod_org: eopaas/eopaas
@@ -240,6 +258,11 @@ jobs:
     if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The CWL-publish App credentials live in the `swr` Environment (default-branch
+    # only), so a side-branch dispatch cannot read them and cannot publish a release.
+    # Same gating that protects the registry secrets; the built-in GITHUB_TOKEN stays
+    # contents: read.
+    environment: swr
     steps:
       - name: Checkout external repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,9 +308,76 @@ jobs:
           echo "Using CWL: $CWL"
           echo "cwl_path=$CWL" >> "$GITHUB_ENV"
 
-      - name: Upload CWL artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Mint the CWL-publish App token
+        # Short-lived installation token from the App whose id + private key are
+        # stored as `swr` Environment secrets. It carries contents: write on THIS
+        # repo only; the built-in GITHUB_TOKEN stays read-only.
+        id: cwl_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          name: cwl
-          path: ${{ env.cwl_path }}
-          if-no-files-found: error
+          app-id: ${{ secrets.CWL_PUBLISH_APP_ID }}
+          private-key: ${{ secrets.CWL_PUBLISH_APP_PRIVATE_KEY }}
+
+      - name: Publish the finalized CWL as a Release
+        # Insula deploys the CWL by reference (executionUnit.href): it fetches the
+        # CWL from a public URL. A Release asset on this public repo gives a stable,
+        # anonymous URL. Tagged with the run's correlation_id so the CLI can find it.
+        env:
+          GH_TOKEN: ${{ steps.cwl_token.outputs.token }}
+          CID: ${{ inputs.correlation_id }}
+          APP: ${{ needs.setup.outputs.app_name }}
+          SHA: ${{ needs.setup.outputs.sha }}
+          SRC: ${{ inputs.repo_url }}
+          REF: ${{ inputs.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          # correlation_id is an untrusted dispatch input that becomes a git tag and
+          # a gh argument: restrict it to a tag-safe charset (no leading dash, no
+          # path/space) before use.
+          case "$CID" in
+            -*) echo "::error::correlation_id must not start with '-'"; exit 1 ;;
+            "") echo "::error::correlation_id is empty"; exit 1 ;;
+            *[!A-Za-z0-9._-]*) echo "::error::correlation_id has invalid characters"; exit 1 ;;
+          esac
+          # The tag stays keyed on correlation_id (the CLI looks the release up by
+          # it). The source commit is tied in via the asset name + release metadata
+          # for traceability; sha8 matches the published image tag.
+          SHA8="$(printf '%.8s' "$SHA")"
+          TAG="cwl-${CID}"
+          ASSET="${APP}-${SHA8}.cwl"
+          cp "$cwl_path" "$ASSET"
+          NOTES="Finalized Insula Application Package.
+          Source: ${SRC}@${REF}
+          Commit: ${SHA}
+          Run correlation id: ${CID}"
+          # Create-or-replace + retry so this step is idempotent and resilient:
+          # - it runs AFTER the prod image is published, so a transient GitHub blip
+          #   must not leave the image published with no CWL release (a lone
+          #   finalize_cwl re-run then recovers instead of a full rebuild);
+          # - a retry or re-run may find the tag already present, so replace it
+          #   rather than fail on "already exists".
+          # SECURITY: writes to cwl-* tags/releases MUST be restricted (a `cwl-*` tag
+          # ruleset with this CWL-publish App as the sole bypass actor) so only this
+          # App - never an onboarded push collaborator - can create or replace them;
+          # otherwise the correlation_id shown in run-name lets an attacker overwrite
+          # a victim's CWL. The ruleset is what makes this create-or-replace safe.
+          publish_release() {
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+              gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag || return 1
+            fi
+            gh release create "$TAG" "$ASSET" \
+              --repo "$REPO" \
+              --title "CWL ${APP} ${SHA8}" \
+              --notes "$NOTES" \
+              --latest=false
+          }
+          n=0
+          until publish_release; do
+            n=$((n+1))
+            if [ "$n" -ge 3 ]; then
+              echo "::error::could not publish CWL release $TAG after retries; the image is already published - re-run finalize_cwl to recover (no rebuild needed)"
+              exit 1
+            fi
+            sleep $((n*5))
+          done
+          echo "Published CWL release $TAG (asset $ASSET, commit $SHA)"

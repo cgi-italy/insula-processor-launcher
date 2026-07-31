@@ -80,7 +80,7 @@ jobs:
           # The CLI locates its run by correlation_id in run-name; dropping it would
           # strand every dispatch (find_run never matches).
           if "correlation_id" not in (wf.get("run-name") or ""):
-              print("::error::run-name must embed ${{ inputs.correlation_id }} (the CLI's run locator)")
+              print("::error::run-name must embed the inputs.correlation_id value (the CLI's run locator)")
               sys.exit(1)
           print("run-name embeds correlation_id")
           # Each reusable-workflow call must pass its required inputs via with:; a

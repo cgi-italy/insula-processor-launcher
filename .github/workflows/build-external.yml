@@ -197,7 +197,7 @@ jobs:
     # production entry point runs. Releasing a parent change = bump these 4 pins
     # together in one PR. Dependabot cannot bump them while the parent has no
     # tags/releases; bump by hand (SHA of the parent's main HEAD).
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/scan_secrets.yml@18612ba1d39f73089ec334b80bff8c9e08b10634 # main 2026-09-21 (skopeo repinned to an immutable quay tag)
     with:
       repo_slug: ${{ needs.setup.outputs.slug }}
       ref: ${{ needs.setup.outputs.sha }}
@@ -217,7 +217,7 @@ jobs:
       && needs.setup.result == 'success'
       && ( needs.scan_secrets.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/build_image.yml@18612ba1d39f73089ec334b80bff8c9e08b10634 # main 2026-09-21 (skopeo repinned to an immutable quay tag)
     with:
       swr_registry: swr.eu-de.otc.t-systems.com
       swr_staging_org: eopaas-test
@@ -230,7 +230,7 @@ jobs:
   security:
     needs: build_image
     if: ${{ !cancelled() && needs.build_image.result == 'success' }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/security.yml@18612ba1d39f73089ec334b80bff8c9e08b10634 # main 2026-09-21 (skopeo repinned to an immutable quay tag)
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_registry: swr.eu-de.otc.t-systems.com
@@ -246,7 +246,7 @@ jobs:
       && needs.build_image.result == 'success'
       && ( needs.security.result == 'success'
            || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
-    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@8e2e011b650318c09878926701de32261e7b41ef # main 2026-07-31 (by-reference deploy: fail-closed gate, re-runnable publish, login retries)
+    uses: cgi-italy/insula-processors-parent-pipeline/.github/workflows/publish_image.yml@18612ba1d39f73089ec334b80bff8c9e08b10634 # main 2026-09-21 (skopeo repinned to an immutable quay tag)
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
       swr_prod_org: eopaas/eopaas
